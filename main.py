@@ -1,5 +1,6 @@
 import os
 import json
+import argparse
 try:
     import ollama  # type: ignore
     _HAS_OLLAMA = True
@@ -13,6 +14,13 @@ try:
 except Exception:
     OpenAI = None  # type: ignore
     _HAS_OPENAI = False
+
+try:
+    from tqdm import tqdm  # type: ignore
+    _HAS_TQDM = True
+except Exception:
+    tqdm = None  # type: ignore
+    _HAS_TQDM = False
 
 
 def load_env(path: str = ".env") -> None:
@@ -36,12 +44,35 @@ def load_env(path: str = ".env") -> None:
         # Non-fatal if .env cannot be parsed; proceed with existing env
         pass
 
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="USMLE QA runner with OpenAI/Ollama providers")
+    parser.add_argument("--input", "-i", default="./data/USMLE.jsonl", help="Path to input JSONL dataset")
+    parser.add_argument("--output", "-o", default=None, help="Path to output JSON file (default auto-named)")
+    parser.add_argument("--limit", "-n", type=int, default=0, help="Limit number of records (0=all)")
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "ollama"],
+        default=None,
+        help="Force provider (default: auto by env)",
+    )
+    parser.add_argument("--openai-model", default=None, help="OpenAI model name (default from env or gpt-5-mini)")
+    parser.add_argument("--ollama-model", default=None, help="Ollama model name (default from env or gemma3)")
+    parser.add_argument("--no-env", action="store_true", help="Do not load .env before running")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-question output")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Detailed per-question output")
+    parser.add_argument("--no-progress", action="store_true", help="Disable progress bar display")
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+
     # load env (for OPENAI_API_KEY, OPENAI_MODEL, PROVIDER)
-    load_env()
+    if not args.no_env:
+        load_env()
 
     # load dataset
-    USMLE_PATH = "./data/USMLE.jsonl"
+    USMLE_PATH = args.input
     data_mle = []
 
     if not os.path.exists(USMLE_PATH):
@@ -55,23 +86,32 @@ def main():
     result = {}
 
     # Provider/model selection
-    provider = os.getenv("PROVIDER")
+    provider = args.provider or os.getenv("PROVIDER")
     if not provider:
         provider = "openai" if os.getenv("OPENAI_API_KEY") else ("ollama" if _HAS_OLLAMA else "none")
 
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3")
+    OPENAI_MODEL = args.openai_model or os.getenv("OPENAI_MODEL", "gpt-5-mini")
+    OLLAMA_MODEL = args.ollama_model or os.getenv("OLLAMA_MODEL", "gemma3")
 
     # send question to model and get response
-    for idx, item in enumerate(data_mle):
+    max_count = len(data_mle) if args.limit <= 0 else min(args.limit, len(data_mle))
+
+    # verbosity & progress
+    verbose = bool(args.verbose)
+    quiet = bool(args.quiet and not verbose)
+    use_progress = _HAS_TQDM and (not args.no_progress) and (not verbose) and (not quiet)
+    pbar = tqdm(total=max_count, desc="Processing", unit="q") if use_progress else None
+
+    for idx, item in enumerate(data_mle[:max_count]):
         question = item["question"]
         options = item["options"]
         gt_answer_idx = item["answer_idx"]
 
-        print("Question:", question)
-        print("Options:", options)
-        print("Ground truth index:", gt_answer_idx)
-        print("")
+        if verbose:
+            print("Question:", question)
+            print("Options:", options)
+            print("Ground truth index:", gt_answer_idx)
+            print("")
 
         PROMPT = (
             "Please directly answer the question with A, B, C, D, or E. "
@@ -118,7 +158,8 @@ def main():
             model_used = "none"
             model_answer = "<error: no provider configured>"
 
-        print("Model Response:", model_answer)
+        if verbose:
+            print("Model Response:", model_answer)
 
         result[idx] = {
             "provider": provider,
@@ -129,12 +170,18 @@ def main():
             "model_response": model_answer,
         }
 
+        if pbar is not None:
+            pbar.update(1)
+
     # save response to output file
     suffix = OPENAI_MODEL if provider == "openai" else OLLAMA_MODEL if provider == "ollama" else "none"
-    out_path = f"resultsusmle_{provider}_{suffix}.json"
+    out_path = args.output or f"resultsusmle_{provider}_{suffix}.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=4, ensure_ascii=False)
-    print(f"Saved results to {out_path}")
+    if pbar is not None:
+        pbar.close()
+    if not quiet:
+        print(f"Saved results to {out_path}")
 
 if __name__ == "__main__":
     main()
