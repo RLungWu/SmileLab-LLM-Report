@@ -1,68 +1,68 @@
 # SmileLab-LLM-Report
 
-Lightweight script to evaluate multiple‑choice USMLE questions using either OpenAI (ChatGPT) or local Ollama models. Provides a small CLI via argparse and optional .env configuration.
+這是一個用來批次評估 USMLE 選擇題的小工具。強烈建議使用本機 Ollama 模型（亦可選擇 OpenAI）。整體使用流程盡量保持「一步到位、少參數」。
 
-**Features**
-- OpenAI or Ollama provider selection (auto-detect via env)
-- Simple JSONL dataset loader (UTF‑8/BOM safe)
-- CLI flags for input/output/limit/provider/models
-- Quiet/verbose output and optional progress bar
-- Writes a JSON results file with model responses
+**最簡啟動（Ollama 推薦）**
+- 安裝 Ollama（https://ollama.com/）
+- 下載任一模型（選一個你機器跑得動的）
+  - `ollama pull llama3.1:8b`
+  - 或 `ollama pull gemma2:2b`
+  - 或 `ollama pull qwen2.5:3b`
+- 準備資料檔 `data/USMLE.jsonl`（JSONL，每行包含 `question`、`options`、`answer_idx`）
+- 安裝依賴並執行（Windows PowerShell）
+  - `pip install -r requirements.txt`
+  - `python main.py --provider ollama --ollama-model llama3.1:8b --limit 5 --metrics`
 
-## Setup
+以上指令會：讀入資料前 5 題、呼叫本機模型推論、並顯示整體準確率，輸出結果到專案根目錄。
 
-1) Create and activate a virtual environment (Windows PowerShell):
-- `python -m venv .venv`
-- `.\.venv\Scripts\Activate`
+## 常用指令（Ollama）
+- 跑全部題目（顯示進度條）
+  - `python main.py --provider ollama --ollama-model llama3.1:8b`
+- 指定輸入與輸出檔名
+  - `python main.py --provider ollama --ollama-model llama3.1:8b --input ./data/USMLE.jsonl --output ./results.json`
+- 控制輸出詳略
+  - `--quiet` 只印出產生的結果檔路徑
+  - `--verbose` 顯示每題題幹、選項、正解與模型回覆
+  - `--no-progress` 關閉進度條
+- 準確率與評分欄位
+  - `--metrics` 跑完印出整體準確率
+  - `--add-eval` 在結果中加入 `pred`（模型答案 A–E）與 `is_correct`（是否答對）
+  - `--metrics-out metrics.json` 另存統計 JSON（含簡易混淆表）
 
-2) Install dependencies:
-- `pip install -r requirements.txt`
+提示：`--ollama-model` 請換成你本機已下載的模型名稱；以上列舉僅為常見範例。
 
-3) Configure environment (optional but recommended for OpenAI):
-- Create a `.env` file with:
-  - `OPENAI_API_KEY=your_api_key`
-  - Optional: `OPENAI_MODEL=gpt-5-mini`
-  - Optional: `PROVIDER=openai` (or leave unset for auto-detect)
+## 資料格式（JSONL）
+每行一筆題目 JSON，必要欄位：
+- `question`: 題目文字（string）
+- `options`: 選項物件（如 A..E 對應文字）
+- `answer_idx`: 正確選項標籤（如 "C"）
 
-## Dataset Format
-
-The input file is JSON Lines (one JSON object per line). Each object should include:
-- `question`: string
-- `options`: object mapping labels (e.g., A..E) to option strings
-- `answer_idx`: string or label for the correct option (e.g., `"C"`)
-
-Example line:
+範例：
 ```
 {"question":"...","options":{"A":"optA","B":"optB","C":"optC"},"answer_idx":"B"}
 ```
 
-## CLI Usage
+## OpenAI（可選）
+- 建立 `.env` 並填入鍵值
+```
+OPENAI_API_KEY=你的_api_key
+OPENAI_MODEL=gpt-5-mini  # 可改
+```
+- 執行
+  - `python main.py --provider openai --limit 5 --metrics`
 
-- Basic (auto-detect provider, use OpenAI if `OPENAI_API_KEY` is set):
-- `python main.py`
+## 參數總覽（需要時再看）
+- `--input, -i`：輸入 JSONL（預設 `./data/USMLE.jsonl`）
+- `--output, -o`：輸出 JSON 路徑（預設自動命名）
+- `--limit, -n`：最多處理筆數（0=全部）
+- `--provider`：`ollama` 或 `openai`
+- `--ollama-model`：Ollama 模型名稱（例 `llama3.1:8b`、`gemma2:2b`）
+- `--openai-model`：OpenAI 模型（例 `gpt-5-mini`）
+- `--no-env`：不讀取 `.env`
+- `--quiet, -q`｜`--verbose, -v`｜`--no-progress`
+- `--metrics`｜`--metrics-out`｜`--add-eval`
 
-- Limit to first N records:
-- `python main.py --limit 5`
-
-- Specify input/output files explicitly:
-- `python main.py --input ./data/USMLE.jsonl --output ./results.json`
-
-- Force provider and set models:
-- `python main.py --provider openai --openai-model gpt-5-mini`
-- `python main.py --provider ollama --ollama-model gemma3`
-
-- Skip loading .env:
-- `python main.py --no-env`
-
-- Output control:
-- `python main.py --quiet` (只顯示最後輸出路徑)
-- `python main.py --verbose`（列出每題題目、選項、正解與模型回覆）
-- `python main.py --no-progress`（停用進度條，預設在非 quiet/verbose 時顯示）
-
-Outputs a file named like `resultsusmle_openai_gpt-5-mini.json` by default, or the path you pass with `--output`.
-
-## Notes
-
-- OpenAI provider requires `OPENAI_API_KEY`.
-- Ollama provider requires the local Ollama service and the requested model available.
-- The loader is tolerant of UTF-8 BOM markers when reading JSONL.
+## 備註
+- 預設輸出檔名：`resultsusmle_{provider}_{model}.json`（可用 `--output` 指定）
+- 若模型回覆不是單一 A–E，程式會嘗試自動擷取第一個 A–E 作為預測
+- 讀檔相容 UTF‑8 與含 BOM 的 JSONL

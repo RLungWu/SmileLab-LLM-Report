@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+import re
 try:
     import ollama  # type: ignore
     _HAS_OLLAMA = True
@@ -62,6 +63,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress per-question output")
     parser.add_argument("--verbose", "-v", action="store_true", help="Detailed per-question output")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bar display")
+    parser.add_argument("--metrics", action="store_true", help="Compute and print accuracy metrics")
+    parser.add_argument("--metrics-out", default=None, help="Write metrics JSON to this path")
+    parser.add_argument("--add-eval", action="store_true", help="Add 'pred' and 'is_correct' to results")
     return parser.parse_args()
 
 def main():
@@ -96,6 +100,26 @@ def main():
     # send question to model and get response
     max_count = len(data_mle) if args.limit <= 0 else min(args.limit, len(data_mle))
 
+    def normalize_choice(text: str | None) -> str | None:
+        if not isinstance(text, str):
+            return None
+        s = text.strip().upper()
+        # find standalone A-E first
+        m = re.search(r"\b([A-E])\b", s)
+        if m:
+            return m.group(1)
+        # tolerate formats like "C)" or "C." or "Answer: C"
+        m = re.search(r"\b([A-E])(?=[\s\)\].,:;!?-])", s)
+        if m:
+            return m.group(1)
+        return None
+
+    # metrics containers
+    total = 0
+    correct = 0
+    labels = ["A", "B", "C", "D", "E"]
+    confusion: dict[str, dict[str, int]] = {g: {p: 0 for p in labels} for g in labels}
+
     # verbosity & progress
     verbose = bool(args.verbose)
     quiet = bool(args.quiet and not verbose)
@@ -105,7 +129,7 @@ def main():
     for idx, item in enumerate(data_mle[:max_count]):
         question = item["question"]
         options = item["options"]
-        gt_answer_idx = item["answer_idx"]
+        gt_answer_idx = str(item["answer_idx"]).strip().upper()
 
         if verbose:
             print("Question:", question)
@@ -161,6 +185,16 @@ def main():
         if verbose:
             print("Model Response:", model_answer)
 
+        # evaluation
+        pred = normalize_choice(model_answer)
+        is_correct = (pred == gt_answer_idx)
+
+        if gt_answer_idx in confusion and pred in confusion.get(gt_answer_idx, {}):
+            confusion[gt_answer_idx][pred] += 1
+        total += 1
+        if is_correct:
+            correct += 1
+
         result[idx] = {
             "provider": provider,
             "model": model_used,
@@ -169,6 +203,10 @@ def main():
             "answer": gt_answer_idx,
             "model_response": model_answer,
         }
+
+        if args.add_eval:
+            result[idx]["pred"] = pred
+            result[idx]["is_correct"] = is_correct
 
         if pbar is not None:
             pbar.update(1)
@@ -182,6 +220,25 @@ def main():
         pbar.close()
     if not quiet:
         print(f"Saved results to {out_path}")
+
+    # metrics reporting
+    if args.metrics:
+        acc = (correct / total) if total else 0.0
+        metrics = {
+            "total": total,
+            "correct": correct,
+            "accuracy": acc,
+            "provider": provider,
+            "model": OPENAI_MODEL if provider == "openai" else OLLAMA_MODEL if provider == "ollama" else "none",
+            "confusion": confusion,
+        }
+        if not quiet:
+            print(f"Accuracy: {correct}/{total} = {acc:.2%}")
+        if args.metrics_out:
+            with open(args.metrics_out, "w", encoding="utf-8") as mf:
+                json.dump(metrics, mf, indent=2, ensure_ascii=False)
+            if not quiet:
+                print(f"Saved metrics to {args.metrics_out}")
 
 if __name__ == "__main__":
     main()
